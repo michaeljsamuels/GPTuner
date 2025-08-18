@@ -11,21 +11,43 @@ public class SpectrumBarsNative : MonoBehaviour
     [Header("Layout")]
     public bool  verticalRight = true;
     public float paddingX = 8f, paddingY = 8f, spacing = 2f;
-    [Range(0.1f, 1f)] public float horizontalFill = 0.9f;   // for vertical mode
-    [Range(0.1f, 1f)] public float verticalFill   = 0.9f;   // for horizontal mode
+    [Range(0.1f, 1f)] public float horizontalFill = 0.9f;
+    [Range(0.1f, 1f)] public float verticalFill   = 0.9f;
 
     [Header("Style")]
+    [Tooltip("Fallback color if gradientShader is missing.")]
     public Color barColor = new Color(1,1,1,0.28f);
-    public float gain = 1.0f;          // extra UI scaling
+    public float gain = 1.0f;                  // amplitude → length scale
     [Range(0f,0.99f)] public float smooth = 0.7f;
     public float fallPerSec = 2.0f;
 
+    [Header("Gradient Look")]
+    public Shader gradientShader;              // assign: UI/GradientBar (Horizontal)
+    [Range(0f,1f)] public float hueStart = 0.0f;   // low freq hue (0=red)
+    [Range(0f,1f)] public float hueEnd   = 0.83f;  // high freq hue (~purple)
+    [Range(0f,1f)] public float satLeft  = 0.9f;
+    [Range(0f,1f)] public float valLeft  = 0.7f;
+    [Range(0f,1f)] public float satRight = 0.9f;
+    [Range(0f,1f)] public float valRight = 1.0f;
+    public float alphaMin = 0.08f;            // min bar alpha at very low amp
+    public float alphaMax = 0.95f;            // max bar alpha at high amp
+    public float alphaGain = 1.2f;            // additional boost for alpha
+
+    [Header("Center Soften (optional)")]
+    public bool softenUnderNote = true;
+    public float centerSoftenRadiusPx = 120f;   // width of the soft notch around center
+    public float centerSoftenFalloffPx = 80f;   // feather
+    public float centerSoftenAmount = 0.5f;     // 0.5 = 50% dim
+
+    
+    
     [Header("Spectrum Config (Native)")]
     public SpectrumNative.Scale scale = SpectrumNative.Scale.Log;
     public float minHz = 50f, maxHz = 4000f, a4Hz = 440f;
 
     RectTransform _root;
     Image[] _bars;
+    Material[] _barMats;          // per-bar material (for gradient + alpha)
     float[] _display, _bands;
 
     float _barH, _barW;
@@ -69,10 +91,14 @@ public class SpectrumBarsNative : MonoBehaviour
     void BuildBars()
     {
         EnsureRoot();
-        if (_bars == null || _bars.Length != bands) _bars = new Image[bands];
-        if (_display == null || _display.Length != bands) _display = new float[bands];
+        bool rebuild = (_bars == null || _bars.Length != bands);
+        if (rebuild)
+        {
+            _bars    = new Image[bands];
+            _display = new float[bands];
+            _barMats = new Material[bands];
+        }
 
-        // reuse or create
         int child = _root.childCount;
         for (int i = 0; i < bands; i++)
         {
@@ -89,8 +115,31 @@ public class SpectrumBarsNative : MonoBehaviour
                 img = barPrefab ? Instantiate(barPrefab, _root) : CreateBar(_root);
                 rt  = img.rectTransform;
             }
-            img.color = barColor;
             _bars[i] = img;
+
+            // Assign gradient material instance per bar (or fallback color)
+            if (gradientShader)
+            {
+                if (_barMats[i] == null || _barMats[i].shader != gradientShader)
+                    _barMats[i] = new Material(gradientShader);
+                img.material = _barMats[i];
+
+                // Per-bar hue from low→high
+                float t = (bands > 1) ? (float)i / (bands - 1) : 0f;
+                float h = Mathf.Lerp(hueStart, hueEnd, t);
+
+                Color left  = Color.HSVToRGB(h, satLeft,  valLeft);
+                Color right = Color.HSVToRGB(h, satRight, valRight);
+
+                _barMats[i].SetColor("_ColorLeft",  left);
+                _barMats[i].SetColor("_ColorRight", right);
+                _barMats[i].SetFloat("_Alpha", alphaMin); // init faint
+            }
+            else
+            {
+                img.material = null;
+                img.color = barColor;
+            }
         }
         for (int i = bands; i < child; i++) _root.GetChild(i).gameObject.SetActive(false);
 
@@ -102,6 +151,8 @@ public class SpectrumBarsNative : MonoBehaviour
         var go = new GameObject("Bar", typeof(RectTransform), typeof(Image));
         go.transform.SetParent(parent, false);
         var img = go.GetComponent<Image>(); img.raycastTarget = false;
+        // Make sure Image UVs span 0..1 across width for gradient
+        var rt = img.rectTransform; rt.anchorMin = rt.anchorMax = new Vector2(0,0);
         return img;
     }
 
@@ -148,7 +199,7 @@ public class SpectrumBarsNative : MonoBehaviour
         // Pull fresh bands from native
         int n = SpectrumNative.ReadBands(ref _bands);
         if (n <= 0 || _bars == null) return;
-        if (_bars.Length != n) { bands = n; BuildBars(); } // rare
+        if (_bars.Length != n) { bands = n; BuildBars(); }
 
         // Smooth & draw
         float dt = Time.deltaTime;
@@ -176,6 +227,39 @@ public class SpectrumBarsNative : MonoBehaviour
                 float h = Mathf.Clamp(cur * maxH, 1f, maxH);
                 var sd = rt.sizeDelta; sd.y = h; sd.x = _barW; rt.sizeDelta = sd;
             }
+
+            // Update per-bar alpha by amplitude
+            if (gradientShader && _barMats != null && _barMats[i] != null)
+            {
+                float a = Mathf.Clamp01(alphaMin + (alphaMax - alphaMin) * Mathf.Clamp01(cur * alphaGain));
+                _barMats[i].SetFloat("_Alpha", a);
+            }
+            else
+            {
+                var c = _bars[i].color;
+                c.a = Mathf.Clamp01(alphaMin + (alphaMax - alphaMin) * Mathf.Clamp01(cur * alphaGain));
+               
+                if (softenUnderNote)
+                {
+                    float centerX = container.rect.width * 0.5f;
+                    // For verticalRight layout bars extend from the right edge; we just dim by how close the bar's CURRENT end is to the screen center
+                    float barEndX = verticalRight
+                        ? container.rect.width - paddingX - _bars[i].rectTransform.sizeDelta.x
+                        : paddingX + _bars[i].rectTransform.sizeDelta.x;
+
+                    float dx = Mathf.Abs(barEndX - centerX);
+                    float edge0 = Mathf.Max(0f, centerSoftenRadiusPx - centerSoftenFalloffPx);
+                    float edge1 = centerSoftenRadiusPx;
+                    float t = Mathf.Clamp01(1f - Mathf.SmoothStep(edge0, edge1, dx));
+                    float notch = 1f - t * centerSoftenAmount;   // 1 at far, (1-amount) at center
+                    c.a *= notch;
+                }
+
+                
+                _bars[i].color = c;
+            }
+            
+            
         }
     }
 }

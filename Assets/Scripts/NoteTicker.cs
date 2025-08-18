@@ -70,6 +70,19 @@ public class NoteTicker : MonoBehaviour
     public Color needleColor = Color.white;
     public float needleThickness = 3f;      // px
 
+    [Header("Gauge Offsets (Horizontal)")]
+    [Tooltip("Vertical pixels to raise/lower the entire cents gauge (needle + ticks + labels) in Horizontal mode.")]
+    public float gaugeYOffset = 16f;
+
+    [Tooltip("Extra vertical pixels to lift labels above the tick line in Horizontal mode.")]
+    public float labelYOffset = 10f;
+
+    [Tooltip("Fine-tune the ±50 alignment horizontally if needed (usually 0).")]
+    public float labelNudgeX = 0f;
+    
+    
+    
+    
     // internal smoothing/state
     float _smPos, _smConf, _smBrightness;
     Color _smHue;
@@ -331,29 +344,22 @@ public class NoteTicker : MonoBehaviour
     {
         if (!viewport) return;
 
-        if (!_gaugeRoot)
-        {
-            var go = new GameObject("__CentsGauge", typeof(RectTransform));
-            go.transform.SetParent(viewport, false);
-            _gaugeRoot = go.GetComponent<RectTransform>();
-            _gaugeRoot.anchorMin = _gaugeRoot.anchorMax = new Vector2(0.5f, 0.5f);
-            _gaugeRoot.pivot = new Vector2(0.5f, 0.5f);
-            _gaugeRoot.sizeDelta = Vector2.zero;
-        }
+        // NEW: reuse an existing gauge root or create one; also cleans duplicates
+        _gaugeRoot = FindOrCreateGaugeRoot();
+        if (!_gaugeRoot) return;
 
         if (!_gaugeTrack)
             _gaugeTrack = CreateLine(_gaugeRoot, gaugeWidth, gaugeColor * 0.5f,
                 vertical: orientation != TapeOrientation.Horizontal);
 
-        // Total ticks: one every 10 cents from −range..+range (inclusive)
         int total = (centsRange * 2) / 10 + 1;
         EnsureTickPool(total);
         LayoutGauge();
 
         if (_needle == null)
             _needle = CreateLine(_gaugeRoot, needleThickness, needleColor,
-                vertical: orientation == TapeOrientation.Horizontal); // vertical bar in horizontal mode
-                }
+                vertical: orientation == TapeOrientation.Horizontal);
+    }
 
 
     void EnsureTickPool(int count)
@@ -374,7 +380,9 @@ public class NoteTicker : MonoBehaviour
             go.transform.SetParent(_gaugeRoot, false);
             var t = go.GetComponent<TMPro.TextMeshProUGUI>();
             t.fontSize = 20;
-            t.alignment = TMPro.TextAlignmentOptions.MidlineRight;
+            t.enableAutoSizing = false;
+            t.enableWordWrapping = false;
+            t.alignment = TMPro.TextAlignmentOptions.Center; // <— centered
             t.raycastTarget = false;
             t.color = gaugeColor;
             _tickLabelsTMP.Add(t);
@@ -423,7 +431,7 @@ public class NoteTicker : MonoBehaviour
 
        int totalExpected = (centsRange * 2) / 10 + 1;
 int total = Mathf.Min(totalExpected, _ticks.Count);
-float pxPerCent = pixelsPerSemitone / 100f;
+float pxPerCent = PxPerCentAtCenter();
 
 for (int i = 0; i < total; i++)
 {
@@ -440,7 +448,7 @@ for (int i = 0; i < total; i++)
         rt.sizeDelta = new Vector2(needleThickness, len);
         rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
         rt.pivot     = new Vector2(0.5f, 0.5f);
-        rt.anchoredPosition = new Vector2(d, gaugeWidth * 0.5f + 6f);
+        rt.anchoredPosition = new Vector2(d,gaugeYOffset);
     }
     else
     {
@@ -448,7 +456,7 @@ for (int i = 0; i < total; i++)
         rt.sizeDelta = new Vector2(len, needleThickness);
         rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
         rt.pivot     = new Vector2(0f, 0.5f);
-        rt.anchoredPosition = new Vector2(gaugeWidth * 0.5f + 6f, d);
+        rt.anchoredPosition = new Vector2(0f,d);
     }
 
     // Labels at ±50
@@ -461,13 +469,13 @@ for (int i = 0; i < total; i++)
         tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
         if (orientation == TapeOrientation.Horizontal)
         {
-            tr.pivot = new Vector2(0.5f, 0f);
-            tr.anchoredPosition = new Vector2(d, gaugeWidth * 0.5f + len + 10f);
+            tr.pivot = new Vector2(0.5f, 0.5f);
+            tr.anchoredPosition = new Vector2(d+labelNudgeX, gaugeYOffset+labelYOffset);
         }
         else
         {
-            tr.pivot = new Vector2(1f, 0.5f);
-            tr.anchoredPosition = new Vector2(gaugeWidth * 0.5f + len + 10f, d);
+            tr.pivot = new Vector2(0.5f, 0.5f);
+            tr.anchoredPosition = new Vector2(0f, d);
         }
     }
 #else
@@ -525,7 +533,7 @@ for (int i = 0; i < total; i++)
         {
             // vertical needle moving left/right
             rt.sizeDelta = new Vector2(needleThickness, pixelsPerSemitone * 0.9f);
-            rt.anchoredPosition = new Vector2(clamped * pxPerCent, 0f);
+            rt.anchoredPosition = new Vector2(clamped * pxPerCent, gaugeYOffset);
         }
         else
         {
@@ -548,7 +556,7 @@ for (int i = 0; i < total; i++)
     {
         int note = ((midi % 12) + 12) % 12;
         int octave = (midi / 12) - 1;
-        return NOTE[note] + octave.ToString();
+        return NOTE[note];// + octave.ToString();
     }
 
     static Image CreateLine(RectTransform parent, float thickness, Color color, bool vertical)
@@ -596,4 +604,46 @@ for (int i = 0; i < total; i++)
         if (t) { t.color = c; return; }
         g.color = c;
     }
+    
+    // Destroy safely in edit vs play mode
+    static void DestroySafe(UnityEngine.Object o)
+    {
+        if (!o) return;
+        if (Application.isPlaying) Destroy(o);
+        else DestroyImmediate(o);
+    }
+
+// Find or create the single __CentsGauge child; purge duplicates.
+    RectTransform FindOrCreateGaugeRoot()
+    {
+        if (!viewport) return null;
+
+        // Collect any existing children with the gauge name
+        var found = new List<RectTransform>();
+        for (int i = 0; i < viewport.childCount; i++)
+        {
+            var rt = viewport.GetChild(i) as RectTransform;
+            if (rt != null && rt.name == "__CentsGauge")
+                found.Add(rt);
+        }
+
+        if (found.Count > 0)
+        {
+            // Keep the first, remove the rest
+            for (int i = 1; i < found.Count; i++)
+                DestroySafe(found[i].gameObject);
+
+            return found[0];
+        }
+
+        // None found — create exactly one
+        var go = new GameObject("__CentsGauge", typeof(RectTransform));
+        go.transform.SetParent(viewport, false);
+        var gauge = go.GetComponent<RectTransform>();
+        gauge.anchorMin = gauge.anchorMax = new Vector2(0.5f, 0.5f);
+        gauge.pivot = new Vector2(0.5f, 0.5f);
+        gauge.sizeDelta = Vector2.zero;
+        return gauge;
+    }
+
 }
