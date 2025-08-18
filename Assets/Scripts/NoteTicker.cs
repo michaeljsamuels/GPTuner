@@ -69,7 +69,7 @@ public class NoteTicker : MonoBehaviour
     List<Graphic> _labels = new List<Graphic>();
     int _poolSemitones;                  // how many labels in pool
 
-    float _smPos;                        // smoothed continuous semitone position (nearestMidi + cents/100)
+    float _smPos = 69f;                  // smoothed continuous semitone position (nearestMidi + cents/100); init to A4
     float _smConf;                       // smoothed confidence 0..1
     Color _smHue;                        // smoothed hue between inTuneHue / offTuneHue
     float _smBrightness;                 // smoothed brightness 0..1
@@ -251,11 +251,10 @@ public class NoteTicker : MonoBehaviour
         float centerFloat = Mathf.Round(semitonePos);      // integer center
         int centerIndex = (int)centerFloat;
 
-        // fractional offset within a semitone; positive => we are sharp, tape scrolls upward
+        // fractional offset within a semitone; positive => we are sharp, tape scrolls downward (higher notes descend into center)
         float frac = semitonePos - centerFloat; // -0.5..+0.5 typically
 
         float step = pixelsPerSemitone;
-        float halfH = viewport.rect.height * 0.5f;
 
         for (int i = 0; i < _poolSemitones; i++)
         {
@@ -272,7 +271,7 @@ public class NoteTicker : MonoBehaviour
 #endif
             if (g is Text lt) lt.text = label;
 
-            // y position: center is zero; up is sharp
+            // y position: center is zero; higher y for higher notes
             float y = (i - semitoneRadius - frac) * step;
             var rt = g.rectTransform;
             rt.anchorMin = new Vector2(0.5f, 0.5f);
@@ -317,8 +316,10 @@ public class NoteTicker : MonoBehaviour
 #endif
                 (g is Text t ? t.color : g.color);
 
-            // Mix baseCol → hue by hueMix, then scale alpha by brightness b
-            Color outCol = Color.Lerp(baseCol, hue, hueMix);
+            // Mix baseCol → hue by hueMix on RGB only (preserve base alpha for distance fade), then scale alpha by brightness b
+            Color hueWithBaseAlpha = hue;
+            hueWithBaseAlpha.a = baseCol.a;
+            Color outCol = Color.Lerp(baseCol, hueWithBaseAlpha, hueMix);
             outCol.a *= b;
 
 #if TMP_PRESENT || TEXTMESHPRO
