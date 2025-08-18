@@ -120,7 +120,7 @@ public class NoteTicker : MonoBehaviour
 
     void Update()
     {
-        if (_needRebuild){ _needRebuild=false; BuildPool(); BuildGauge(); }
+       // if (_needRebuild){ _needRebuild=false; BuildPool(); BuildGauge(); }
 
         float hz    = TunerNative.GetLatestPitchHz();
         float cents = TunerNative.GetCentsOffset();
@@ -346,9 +346,9 @@ public class NoteTicker : MonoBehaviour
         EnsureTickPool(total);
         LayoutGauge();
 
-        if (_needle == null)
+      //  if (_needle == null)
             _needle = CreateLine(_gaugeRoot, needleThickness, needleColor,
-                                 vertical: orientation == TapeOrientation.Horizontal);
+                                vertical: orientation == TapeOrientation.Horizontal);
     }
 
     void EnsureTickPool(int count)
