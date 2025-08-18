@@ -10,6 +10,22 @@ using TMPro;
 [ExecuteAlways]
 public class NoteTicker : MonoBehaviour
 {
+    
+    public enum TapeOrientation { Vertical, Horizontal }
+
+    [Header("Orientation")]
+    public TapeOrientation orientation = TapeOrientation.Horizontal; // NEW: default horizontal
+
+    [Header("Fisheye (center emphasis)")]
+    [Tooltip("How much the center is magnified. 0 = off, 1.0 = strong.")]
+    [Range(0f, 2f)] public float fisheyeStrength = 1.0f;
+
+    [Tooltip("How many semitones around center are inside the fisheye 'bubble'.")]
+    [Range(1f, 24f)] public float fisheyeRadiusSemitones = 6f;
+
+    [Tooltip("How much of the screen height the center needle+note should occupy.")]
+    [Range(0.05f, 0.6f)] public float centerScreenFrac = 0.25f;
+
     [Header("Layout (UI)")]
     public RectTransform viewport;
     public Graphic centerLine;
@@ -139,11 +155,23 @@ public class NoteTicker : MonoBehaviour
         if (centerLine)
         {
             var rt = centerLine.rectTransform;
-            rt.anchorMin = new Vector2(0f,0.5f);
-            rt.anchorMax = new Vector2(1f,0.5f);
-            rt.pivot     = new Vector2(0.5f,0.5f);
+            if (orientation == TapeOrientation.Horizontal)
+            {
+                // vertical line centered
+                rt.anchorMin = new Vector2(0.5f, 0f);
+                rt.anchorMax = new Vector2(0.5f, 1f);
+                rt.pivot     = new Vector2(0.5f, 0.5f);
+            }
+            else
+            {
+                // horizontal line centered
+                rt.anchorMin = new Vector2(0f, 0.5f);
+                rt.anchorMax = new Vector2(1f, 0.5f);
+                rt.pivot     = new Vector2(0.5f, 0.5f);
+            }
             rt.anchoredPosition = Vector2.zero;
         }
+
     }
 
     void BuildPool()
@@ -206,16 +234,25 @@ public class NoteTicker : MonoBehaviour
 
             SetLabelText(g, label);
 
-            float y = (i - semitoneRadius - frac) * step;
-            var rt = g.rectTransform;
-            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f,0.5f);
-            rt.anchoredPosition = new Vector2(0f, y);
+            float offset = (i - semitoneRadius - frac);              // semitone offset from center
+            float posPx  = MapSemitoneOffsetToPixels(offset);        // fisheye mapping
 
-            float dist = Mathf.Abs(i - semitoneRadius - frac);
-            float atten = Mathf.Clamp01(1f - (dist / (semitoneRadius + 0.5f)));
+            var rt = g.rectTransform;
+            rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
+
+            if (orientation == TapeOrientation.Horizontal)
+                rt.anchoredPosition = new Vector2(posPx, 0f);        // <-- X movement
+            else
+                rt.anchoredPosition = new Vector2(0f, posPx);        // (old vertical)
+
+            float prox = CenterProximity(offset);
+            float s = Mathf.Lerp(sideNoteScale, centerNoteScale, prox);
+            rt.localScale = new Vector3(s, s, 1f);
+
             Color baseCol = (i == semitoneRadius) ? centerNoteColor : sideNoteColor;
-            baseCol.a *= Mathf.Lerp(0.5f, 1f, atten);
+            baseCol.a *= Mathf.Lerp(0.4f, 1f, prox);
             SetLabelColor(g, baseCol);
+
         }
 
         _content.anchoredPosition = Vector2.zero;
@@ -245,6 +282,49 @@ public class NoteTicker : MonoBehaviour
             centerLine.color = c;
         }
     }
+    
+    // Approximate integral of a distance-dependent pixels-per-semitone profile.
+// This gives a smooth fisheye: big pixels near 0, small far away.
+    float MapSemitoneOffsetToPixels(float deltaSemitones)
+    {
+        float basePPS = pixelsPerSemitone;
+        float s = Mathf.Max(0f, fisheyeStrength);
+        float sigma = Mathf.Max(0.001f, fisheyeRadiusSemitones);
+
+        if (s <= 0f) return deltaSemitones * basePPS;
+
+        float step = 0.1f * Mathf.Sign(deltaSemitones);
+        int iters = Mathf.CeilToInt(Mathf.Abs(deltaSemitones) / 0.1f);
+        float sum = 0f;
+        float d = 0f;
+        for (int i = 0; i < iters; i++)
+        {
+            // Gaussian emphasis: 1 + s*exp(-d^2/sigma^2)
+            float g = 1f + s * Mathf.Exp(-(d * d) / (sigma * sigma));
+            sum += g * basePPS * 0.1f;
+            d += step;
+        }
+        return Mathf.Sign(deltaSemitones) * sum;
+    }
+
+// Local pixels-per-cent exactly at the center (used for the needle)
+    float PxPerCentAtCenter()
+    {
+        float basePPS = pixelsPerSemitone;
+        float g0 = 1f + Mathf.Max(0f, fisheyeStrength); // Gaussian at d=0 equals 1 + s
+        return (basePPS * g0) / 100f;
+    }
+
+// A proximity curve that plays nice with the fisheye for label alpha/scale
+    float CenterProximity(float semitoneOffset)
+    {
+        float r = Mathf.Max(0.001f, fisheyeRadiusSemitones);
+        // smootherstep on |offset|/r
+        float x = Mathf.Clamp01(Mathf.Abs(semitoneOffset) / r);
+        float s = 1f - (x * x * (3f - 2f * x)); // 1 near 0, 0 near r+
+        return s;
+    }
+
 
     // ======= Cents Gauge =======
     void BuildGauge()
@@ -262,7 +342,8 @@ public class NoteTicker : MonoBehaviour
         }
 
         if (!_gaugeTrack)
-            _gaugeTrack = CreateLine(_gaugeRoot, gaugeWidth, gaugeColor * 0.5f, vertical: true);
+            _gaugeTrack = CreateLine(_gaugeRoot, gaugeWidth, gaugeColor * 0.5f,
+                vertical: orientation != TapeOrientation.Horizontal);
 
         // Total ticks: one every 10 cents from −range..+range (inclusive)
         int total = (centsRange * 2) / 10 + 1;
@@ -270,8 +351,9 @@ public class NoteTicker : MonoBehaviour
         LayoutGauge();
 
         if (_needle == null)
-            _needle = CreateLine(_gaugeRoot, needleThickness, needleColor, vertical: false);
-    }
+            _needle = CreateLine(_gaugeRoot, needleThickness, needleColor,
+                vertical: orientation == TapeOrientation.Horizontal); // vertical bar in horizontal mode
+                }
 
 
     void EnsureTickPool(int count)
@@ -323,50 +405,92 @@ public class NoteTicker : MonoBehaviour
     {
         if (!_gaugeRoot || !_gaugeTrack) return;
 
-        float h = viewport.rect.height;
-        float trackLen = Mathf.Min(pixelsPerSemitone, h * 0.7f);
-        _gaugeTrack.rectTransform.sizeDelta = new Vector2(gaugeWidth, trackLen);
+        if (!_gaugeRoot || !_gaugeTrack) return;
 
-        int totalExpected = (centsRange * 2) / 10 + 1;
-        int total = Mathf.Min(totalExpected, _ticks.Count); // safety
-
-        float pxPerCent = pixelsPerSemitone / 100f;
-
-        for (int i = 0; i < total; i++)
+        if (orientation == TapeOrientation.Horizontal)
         {
-            int cents = -centsRange + i * 10;
-            float y = cents * pxPerCent;
+            float w = viewport.rect.width;
+            float trackLen = Mathf.Clamp01(centerScreenFrac) * w;    // ~25% of screen width
+            _gaugeTrack.rectTransform.sizeDelta = new Vector2(trackLen, gaugeWidth);
+        }
+        else
+        {
+            float h = viewport.rect.height;
+            float trackLen = Mathf.Clamp01(centerScreenFrac) * h;    // vertical mode
+            _gaugeTrack.rectTransform.sizeDelta = new Vector2(gaugeWidth, trackLen);
+        }
 
-            var tick = _ticks[i];
-            var rt = tick.rectTransform;
-            float len = (Mathf.Abs(cents) == centsRange || cents == 0 || Mathf.Abs(cents) == 50) ? tickLong : tickShort;
-            rt.sizeDelta = new Vector2(len, needleThickness);
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(0f, 0.5f);
-            rt.anchoredPosition = new Vector2(gaugeWidth * 0.5f + 6f, y);
 
+       int totalExpected = (centsRange * 2) / 10 + 1;
+int total = Mathf.Min(totalExpected, _ticks.Count);
+float pxPerCent = pixelsPerSemitone / 100f;
+
+for (int i = 0; i < total; i++)
+{
+    int cents = -centsRange + i * 10;
+    float d = cents * pxPerCent;
+
+    var tick = _ticks[i];
+    var rt = tick.rectTransform;
+    float len = (Mathf.Abs(cents) == centsRange || cents == 0 || Mathf.Abs(cents) == 50) ? tickLong : tickShort;
+
+    if (orientation == TapeOrientation.Horizontal)
+    {
+        // Tick is vertical line, positioned along X
+        rt.sizeDelta = new Vector2(needleThickness, len);
+        rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot     = new Vector2(0.5f, 0.5f);
+        rt.anchoredPosition = new Vector2(d, gaugeWidth * 0.5f + 6f);
+    }
+    else
+    {
+        // Old vertical tape layout
+        rt.sizeDelta = new Vector2(len, needleThickness);
+        rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+        rt.pivot     = new Vector2(0f, 0.5f);
+        rt.anchoredPosition = new Vector2(gaugeWidth * 0.5f + 6f, d);
+    }
+
+    // Labels at ±50
 #if TMP_PRESENT || TEXTMESHPRO
-            var tt = (i < _tickLabelsTMP.Count) ? _tickLabelsTMP[i] : null;
-            if (tt)
-            {
-                tt.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
-                var tr = tt.rectTransform;
-                tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
-                tr.pivot = new Vector2(1f, 0.5f);
-                tr.anchoredPosition = new Vector2(gaugeWidth * 0.5f + len + 10f, y);
-            }
-#else
-        var tt = (i < _tickLabelsText.Count) ? _tickLabelsText[i] : null;
-        if (tt)
+    var tt = (i < _tickLabelsTMP.Count) ? _tickLabelsTMP[i] : null;
+    if (tt)
+    {
+        tt.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
+        var tr = tt.rectTransform;
+        tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
+        if (orientation == TapeOrientation.Horizontal)
         {
-            tt.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
-            var tr = tt.rectTransform;
-            tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
+            tr.pivot = new Vector2(0.5f, 0f);
+            tr.anchoredPosition = new Vector2(d, gaugeWidth * 0.5f + len + 10f);
+        }
+        else
+        {
             tr.pivot = new Vector2(1f, 0.5f);
-            tr.anchoredPosition = new Vector2(gaugeWidth * 0.5f + len + 10f, y);
+            tr.anchoredPosition = new Vector2(gaugeWidth * 0.5f + len + 10f, d);
         }
+    }
+#else
+    var tt = (i < _tickLabelsText.Count) ? _tickLabelsText[i] : null;
+    if (tt)
+    {
+        tt.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
+        var tr = tt.rectTransform;
+        tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
+        if (orientation == TapeOrientation.Horizontal)
+        {
+            tr.pivot = new Vector2(0.5f, 0f);
+            tr.anchoredPosition = new Vector2(d, gaugeWidth * 0.5f + len + 10f);
+        }
+        else
+        {
+            tr.pivot = new Vector2(1f, 0.5f);
+            tr.anchoredPosition = new Vector2(gaugeWidth * 0.5f + len + 10f, d);
+        }
+    }
 #endif
-        }
+}
+
     }
 
 
@@ -393,11 +517,22 @@ public class NoteTicker : MonoBehaviour
     {
         if (_needle == null) return;
         // needle Y in pixels: 100¢ = one semitone of travel
-        float pxPerCent = pixelsPerSemitone / 100f;
+        float pxPerCent = PxPerCentAtCenter();
         float clamped = Mathf.Clamp(cents, -centsRange, centsRange);
+
         var rt = _needle.rectTransform;
-        rt.sizeDelta = new Vector2(pixelsPerSemitone*0.9f, needleThickness);
-        rt.anchoredPosition = new Vector2(0f, clamped * pxPerCent);
+        if (orientation == TapeOrientation.Horizontal)
+        {
+            // vertical needle moving left/right
+            rt.sizeDelta = new Vector2(needleThickness, pixelsPerSemitone * 0.9f);
+            rt.anchoredPosition = new Vector2(clamped * pxPerCent, 0f);
+        }
+        else
+        {
+            // old vertical layout
+            rt.sizeDelta = new Vector2(pixelsPerSemitone * 0.9f, needleThickness);
+            rt.anchoredPosition = new Vector2(0f, clamped * pxPerCent);
+        }
 
         // Colors with brightness & hue
         var needleCol = Color.Lerp(needleColor, _smHue, 0.5f);
