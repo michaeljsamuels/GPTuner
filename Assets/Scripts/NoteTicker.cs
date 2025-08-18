@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
-using TMPro;
 #if TMP_PRESENT || TEXTMESHPRO
 using TMPro;
 #endif
@@ -10,20 +9,17 @@ using TMPro;
 [ExecuteAlways]
 public class NoteTicker : MonoBehaviour
 {
-    
     public enum TapeOrientation { Vertical, Horizontal }
 
     [Header("Orientation")]
-    public TapeOrientation orientation = TapeOrientation.Horizontal; // NEW: default horizontal
+    public TapeOrientation orientation = TapeOrientation.Horizontal;
 
     [Header("Fisheye (center emphasis)")]
     [Tooltip("How much the center is magnified. 0 = off, 1.0 = strong.")]
     [Range(0f, 2f)] public float fisheyeStrength = 1.0f;
-
     [Tooltip("How many semitones around center are inside the fisheye 'bubble'.")]
     [Range(1f, 24f)] public float fisheyeRadiusSemitones = 6f;
-
-    [Tooltip("How much of the screen height the center needle+note should occupy.")]
+    [Tooltip("How much of the screen height/width the center needle+note should occupy.")]
     [Range(0.05f, 0.6f)] public float centerScreenFrac = 0.25f;
 
     [Header("Layout (UI)")]
@@ -59,30 +55,39 @@ public class NoteTicker : MonoBehaviour
     public float a4Hz = 440f;
     [Range(0f, 1f)] public float confThreshold = 0.15f;
 
-    // ===== NEW: Cents Gauge =====
+    // ===== Cents Gauge =====
     [Header("Cents Gauge")]
     [Tooltip("± range shown by the gauge (cents)")]
-    public int centsRange = 50;             // ±50¢ by default
-    public float gaugeWidth = 8f;           // px
-    public float tickLong = 20f;            // px (±50 labels)
-    public float tickShort = 10f;           // px (every 10c)
+    public int centsRange = 50;         // ±50¢
+    public float gaugeWidth = 8f;       // px
+    public float tickLong = 20f;        // px (±50 labels)
+    public float tickShort = 10f;       // px (every 10c)
     public Color gaugeColor = new Color(1,1,1,0.5f);
     public Color needleColor = Color.white;
-    public float needleThickness = 3f;      // px
+    public float needleThickness = 3f;  // px
 
     [Header("Gauge Offsets (Horizontal)")]
     [Tooltip("Vertical pixels to raise/lower the entire cents gauge (needle + ticks + labels) in Horizontal mode.")]
     public float gaugeYOffset = 16f;
-
     [Tooltip("Extra vertical pixels to lift labels above the tick line in Horizontal mode.")]
     public float labelYOffset = 10f;
-
     [Tooltip("Fine-tune the ±50 alignment horizontally if needed (usually 0).")]
     public float labelNudgeX = 0f;
-    
-    
-    
-    
+
+    // ===== Accidental & Octave formatting (TMP rich text) =====
+    [Header("Accidental & Octave Styling (TMP)")]
+    public bool showAccidentalSmall = true;
+    [Range(20,100)] public int accidentalSizePercent = 55;
+    [Range(-0.5f, 0.55f)] public float accidentalVOffsetEm = 0.55f;
+    [Range(-0.5f, 0.5f)] public float accidentalHSpaceEm = 0.10f;
+    [Range(0f,1f)] public float accidentalAlpha = 1.0f;
+
+    public bool showOctaveSmall = true;
+    [Range(20,100)] public int octaveSizePercent = 45;
+    [Range(-0.5f, 0.5f)] public float octaveVOffsetEm = 0.35f;
+    [Range(-0.5f, 0.5f)] public float octaveHSpaceEm = 0.08f;
+    [Range(0f,1f)] public float octaveAlpha = 0.8f;
+
     // internal smoothing/state
     float _smPos, _smConf, _smBrightness;
     Color _smHue;
@@ -184,7 +189,6 @@ public class NoteTicker : MonoBehaviour
             }
             rt.anchoredPosition = Vector2.zero;
         }
-
     }
 
     void BuildPool()
@@ -235,28 +239,24 @@ public class NoteTicker : MonoBehaviour
         int centerIndex = (int)centerFloat;
         float frac = semitonePos - centerFloat;
 
-        float step = pixelsPerSemitone;
-
         for (int i=0;i<_poolSemitones;i++)
         {
             int semitone = centerIndex + (i - semitoneRadius);
-            string label = MidiToNameOctave(semitone);
+            string label = MidiToName(semitone);
+            int octave = MidiToOctave(semitone);
 
             var g = _labels[i];
             if (!g) continue;
 
-            SetLabelText(g, label);
+            SetLabelText(g, label, octave);
 
-            float offset = (i - semitoneRadius - frac);              // semitone offset from center
-            float posPx  = MapSemitoneOffsetToPixels(offset);        // fisheye mapping
+            float offset = (i - semitoneRadius - frac);      // semitone offset from center
+            float posPx  = MapSemitoneOffsetToPixels(offset); // fisheye mapping
 
             var rt = g.rectTransform;
             rt.anchorMin = rt.anchorMax = rt.pivot = new Vector2(0.5f, 0.5f);
-
-            if (orientation == TapeOrientation.Horizontal)
-                rt.anchoredPosition = new Vector2(posPx, 0f);        // <-- X movement
-            else
-                rt.anchoredPosition = new Vector2(0f, posPx);        // (old vertical)
+            if (orientation == TapeOrientation.Horizontal) rt.anchoredPosition = new Vector2(posPx, 0f);
+            else                                           rt.anchoredPosition = new Vector2(0f, posPx);
 
             float prox = CenterProximity(offset);
             float s = Mathf.Lerp(sideNoteScale, centerNoteScale, prox);
@@ -265,7 +265,6 @@ public class NoteTicker : MonoBehaviour
             Color baseCol = (i == semitoneRadius) ? centerNoteColor : sideNoteColor;
             baseCol.a *= Mathf.Lerp(0.4f, 1f, prox);
             SetLabelColor(g, baseCol);
-
         }
 
         _content.anchoredPosition = Vector2.zero;
@@ -295,15 +294,13 @@ public class NoteTicker : MonoBehaviour
             centerLine.color = c;
         }
     }
-    
-    // Approximate integral of a distance-dependent pixels-per-semitone profile.
-// This gives a smooth fisheye: big pixels near 0, small far away.
+
+    // ===== fisheye helpers =====
     float MapSemitoneOffsetToPixels(float deltaSemitones)
     {
         float basePPS = pixelsPerSemitone;
         float s = Mathf.Max(0f, fisheyeStrength);
         float sigma = Mathf.Max(0.001f, fisheyeRadiusSemitones);
-
         if (s <= 0f) return deltaSemitones * basePPS;
 
         float step = 0.1f * Mathf.Sign(deltaSemitones);
@@ -312,7 +309,6 @@ public class NoteTicker : MonoBehaviour
         float d = 0f;
         for (int i = 0; i < iters; i++)
         {
-            // Gaussian emphasis: 1 + s*exp(-d^2/sigma^2)
             float g = 1f + s * Mathf.Exp(-(d * d) / (sigma * sigma));
             sum += g * basePPS * 0.1f;
             d += step;
@@ -320,37 +316,31 @@ public class NoteTicker : MonoBehaviour
         return Mathf.Sign(deltaSemitones) * sum;
     }
 
-// Local pixels-per-cent exactly at the center (used for the needle)
     float PxPerCentAtCenter()
     {
         float basePPS = pixelsPerSemitone;
-        float g0 = 1f + Mathf.Max(0f, fisheyeStrength); // Gaussian at d=0 equals 1 + s
+        float g0 = 1f + Mathf.Max(0f, fisheyeStrength); // at d=0
         return (basePPS * g0) / 100f;
     }
 
-// A proximity curve that plays nice with the fisheye for label alpha/scale
     float CenterProximity(float semitoneOffset)
     {
         float r = Mathf.Max(0.001f, fisheyeRadiusSemitones);
-        // smootherstep on |offset|/r
         float x = Mathf.Clamp01(Mathf.Abs(semitoneOffset) / r);
-        float s = 1f - (x * x * (3f - 2f * x)); // 1 near 0, 0 near r+
-        return s;
+        return 1f - (x * x * (3f - 2f * x)); // smootherstep inverse
     }
-
 
     // ======= Cents Gauge =======
     void BuildGauge()
     {
         if (!viewport) return;
 
-        // NEW: reuse an existing gauge root or create one; also cleans duplicates
         _gaugeRoot = FindOrCreateGaugeRoot();
         if (!_gaugeRoot) return;
 
         if (!_gaugeTrack)
             _gaugeTrack = CreateLine(_gaugeRoot, gaugeWidth, gaugeColor * 0.5f,
-                vertical: orientation != TapeOrientation.Horizontal);
+                                     vertical: orientation != TapeOrientation.Horizontal);
 
         int total = (centsRange * 2) / 10 + 1;
         EnsureTickPool(total);
@@ -358,149 +348,126 @@ public class NoteTicker : MonoBehaviour
 
         if (_needle == null)
             _needle = CreateLine(_gaugeRoot, needleThickness, needleColor,
-                vertical: orientation == TapeOrientation.Horizontal);
+                                 vertical: orientation == TapeOrientation.Horizontal);
     }
-
 
     void EnsureTickPool(int count)
     {
-        // Grow ticks
         while (_ticks.Count < count)
             _ticks.Add(CreateLine(_gaugeRoot, tickShort, gaugeColor, vertical: false));
 
-        // Shrink/disable extras
         for (int i = 0; i < _ticks.Count; i++)
             _ticks[i].gameObject.SetActive(i < count);
 
 #if TMP_PRESENT || TEXTMESHPRO
-        // Grow TMP labels
         while (_tickLabelsTMP.Count < count)
         {
-            var go = new GameObject("TickLabel", typeof(RectTransform), typeof(TMPro.TextMeshProUGUI));
+            var go = new GameObject("TickLabel", typeof(RectTransform), typeof(TextMeshProUGUI));
             go.transform.SetParent(_gaugeRoot, false);
-            var t = go.GetComponent<TMPro.TextMeshProUGUI>();
+            var t = go.GetComponent<TextMeshProUGUI>();
             t.fontSize = 20;
             t.enableAutoSizing = false;
             t.enableWordWrapping = false;
-            t.alignment = TMPro.TextAlignmentOptions.Center; // <— centered
+            t.alignment = TextAlignmentOptions.Center;
             t.raycastTarget = false;
             t.color = gaugeColor;
             _tickLabelsTMP.Add(t);
         }
-        // Enable/disable to match count
         for (int i = 0; i < _tickLabelsTMP.Count; i++)
             _tickLabelsTMP[i].gameObject.SetActive(i < count);
 #else
-    // Legacy Text labels
-    while (_tickLabelsText.Count < count)
-    {
-        var go = new GameObject("TickLabel", typeof(RectTransform), typeof(Text));
-        go.transform.SetParent(_gaugeRoot, false);
-        var t = go.GetComponent<Text>();
-        t.fontSize = 14;
-        t.alignment = TextAnchor.MiddleRight;
-        t.raycastTarget = false;
-        t.color = gaugeColor;
-        _tickLabelsText.Add(t);
-    }
-    for (int i = 0; i < _tickLabelsText.Count; i++)
-        _tickLabelsText[i].gameObject.SetActive(i < count);
+        while (_tickLabelsText.Count < count)
+        {
+            var go = new GameObject("TickLabel", typeof(RectTransform), typeof(Text));
+            go.transform.SetParent(_gaugeRoot, false);
+            var t = go.GetComponent<Text>();
+            t.fontSize = 14;
+            t.alignment = TextAnchor.MiddleRight;
+            t.raycastTarget = false;
+            t.color = gaugeColor;
+            _tickLabelsText.Add(t);
+        }
+        for (int i = 0; i < _tickLabelsText.Count; i++)
+            _tickLabelsText[i].gameObject.SetActive(i < count);
 #endif
     }
-
 
     void LayoutGauge()
     {
         if (!_gaugeRoot || !_gaugeTrack) return;
 
-        if (!_gaugeRoot || !_gaugeTrack) return;
-
         if (orientation == TapeOrientation.Horizontal)
         {
             float w = viewport.rect.width;
-            float trackLen = Mathf.Clamp01(centerScreenFrac) * w;    // ~25% of screen width
-            _gaugeTrack.rectTransform.sizeDelta = new Vector2(trackLen, gaugeWidth);
+            float trackLen = Mathf.Clamp01(centerScreenFrac) * w;
+            var tr = _gaugeTrack.rectTransform;
+            tr.sizeDelta = new Vector2(trackLen, gaugeWidth);
+            tr.anchoredPosition = new Vector2(0f, gaugeYOffset);
         }
         else
         {
             float h = viewport.rect.height;
-            float trackLen = Mathf.Clamp01(centerScreenFrac) * h;    // vertical mode
+            float trackLen = Mathf.Clamp01(centerScreenFrac) * h;
             _gaugeTrack.rectTransform.sizeDelta = new Vector2(gaugeWidth, trackLen);
         }
 
+        int totalExpected = (centsRange * 2) / 10 + 1;
+        int total = Mathf.Min(totalExpected, _ticks.Count);
+        float pxPerCent = PxPerCentAtCenter();
 
-       int totalExpected = (centsRange * 2) / 10 + 1;
-int total = Mathf.Min(totalExpected, _ticks.Count);
-float pxPerCent = PxPerCentAtCenter();
+        for (int i = 0; i < total; i++)
+        {
+            int cents = -centsRange + i * 10;
+            float d = Mathf.Round(cents * pxPerCent);
 
-for (int i = 0; i < total; i++)
-{
-    int cents = -centsRange + i * 10;
-    float d = cents * pxPerCent;
+            var tick = _ticks[i];
+            var rt = tick.rectTransform;
+            float len = (Mathf.Abs(cents) == centsRange || cents == 0 || Mathf.Abs(cents) == 50) ? tickLong : tickShort;
 
-    var tick = _ticks[i];
-    var rt = tick.rectTransform;
-    float len = (Mathf.Abs(cents) == centsRange || cents == 0 || Mathf.Abs(cents) == 50) ? tickLong : tickShort;
+            if (orientation == TapeOrientation.Horizontal)
+            {
+                rt.sizeDelta = new Vector2(needleThickness, len);
+                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+                rt.pivot     = new Vector2(0.5f, 0.5f);
+                rt.anchoredPosition = new Vector2(d, gaugeYOffset);
+            }
+            else
+            {
+                rt.sizeDelta = new Vector2(len, needleThickness);
+                rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+                rt.pivot     = new Vector2(0f, 0.5f);
+                rt.anchoredPosition = new Vector2(0f, d);
+            }
 
-    if (orientation == TapeOrientation.Horizontal)
-    {
-        // Tick is vertical line, positioned along X
-        rt.sizeDelta = new Vector2(needleThickness, len);
-        rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-        rt.pivot     = new Vector2(0.5f, 0.5f);
-        rt.anchoredPosition = new Vector2(d,gaugeYOffset);
-    }
-    else
-    {
-        // Old vertical tape layout
-        rt.sizeDelta = new Vector2(len, needleThickness);
-        rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-        rt.pivot     = new Vector2(0f, 0.5f);
-        rt.anchoredPosition = new Vector2(0f,d);
-    }
-
-    // Labels at ±50
 #if TMP_PRESENT || TEXTMESHPRO
-    var tt = (i < _tickLabelsTMP.Count) ? _tickLabelsTMP[i] : null;
-    if (tt)
-    {
-        tt.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
-        var tr = tt.rectTransform;
-        tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
-        if (orientation == TapeOrientation.Horizontal)
-        {
-            tr.pivot = new Vector2(0.5f, 0.5f);
-            tr.anchoredPosition = new Vector2(d+labelNudgeX, gaugeYOffset+labelYOffset);
-        }
-        else
-        {
-            tr.pivot = new Vector2(0.5f, 0.5f);
-            tr.anchoredPosition = new Vector2(0f, d);
-        }
-    }
+            var tt = (i < _tickLabelsTMP.Count) ? _tickLabelsTMP[i] : null;
+            if (tt)
+            {
+                tt.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
+                var tr = tt.rectTransform;
+                tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
+                tr.pivot = new Vector2(0.5f, 0.5f);
+                if (orientation == TapeOrientation.Horizontal)
+                    tr.anchoredPosition = new Vector2(d + labelNudgeX, gaugeYOffset + labelYOffset);
+                else
+                    tr.anchoredPosition = new Vector2(0f, d);
+            }
 #else
-    var tt = (i < _tickLabelsText.Count) ? _tickLabelsText[i] : null;
-    if (tt)
-    {
-        tt.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
-        var tr = tt.rectTransform;
-        tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
-        if (orientation == TapeOrientation.Horizontal)
-        {
-            tr.pivot = new Vector2(0.5f, 0f);
-            tr.anchoredPosition = new Vector2(d, gaugeWidth * 0.5f + len + 10f);
-        }
-        else
-        {
-            tr.pivot = new Vector2(1f, 0.5f);
-            tr.anchoredPosition = new Vector2(gaugeWidth * 0.5f + len + 10f, d);
-        }
-    }
+            var tt2 = (i < _tickLabelsText.Count) ? _tickLabelsText[i] : null;
+            if (tt2)
+            {
+                tt2.text = (Mathf.Abs(cents) == 50) ? (cents > 0 ? "+50" : "-50") : "";
+                var tr = tt2.rectTransform;
+                tr.anchorMin = tr.anchorMax = new Vector2(0.5f, 0.5f);
+                tr.pivot = new Vector2(0.5f, 0.5f);
+                if (orientation == TapeOrientation.Horizontal)
+                    tr.anchoredPosition = new Vector2(d + labelNudgeX, gaugeYOffset + labelYOffset);
+                else
+                    tr.anchoredPosition = new Vector2(0f, d);
+            }
 #endif
-}
-
+        }
     }
-
 
     void UpdateTickLabels()
     {
@@ -512,11 +479,11 @@ for (int i = 0; i < total; i++)
             if (t && t.gameObject.activeSelf) t.color = gaugeColor * new Color(1,1,1,a);
         }
 #else
-    for (int i = 0; i < _tickLabelsText.Count; i++)
-    {
-        var t = _tickLabelsText[i];
-        if (t && t.gameObject.activeSelf) t.color = gaugeColor * new Color(1,1,1,a);
-    }
+        for (int i = 0; i < _tickLabelsText.Count; i++)
+        {
+            var t = _tickLabelsText[i];
+            if (t && t.gameObject.activeSelf) t.color = gaugeColor * new Color(1,1,1,a);
+        }
 #endif
         if (_gaugeTrack) _gaugeTrack.color = gaugeColor * new Color(1,1,1, a*0.8f);
     }
@@ -524,40 +491,36 @@ for (int i = 0; i < total; i++)
     void UpdateGauge(float cents)
     {
         if (_needle == null) return;
-        // needle Y in pixels: 100¢ = one semitone of travel
         float pxPerCent = PxPerCentAtCenter();
         float clamped = Mathf.Clamp(cents, -centsRange, centsRange);
 
         var rt = _needle.rectTransform;
         if (orientation == TapeOrientation.Horizontal)
         {
-            // vertical needle moving left/right
             rt.sizeDelta = new Vector2(needleThickness, pixelsPerSemitone * 0.9f);
-            rt.anchoredPosition = new Vector2(clamped * pxPerCent, gaugeYOffset);
+            rt.anchoredPosition = new Vector2(Mathf.Round(clamped * pxPerCent), gaugeYOffset);
         }
         else
         {
-            // old vertical layout
             rt.sizeDelta = new Vector2(pixelsPerSemitone * 0.9f, needleThickness);
-            rt.anchoredPosition = new Vector2(0f, clamped * pxPerCent);
+            rt.anchoredPosition = new Vector2(0f, Mathf.Round(clamped * pxPerCent));
         }
 
-        // Colors with brightness & hue
         var needleCol = Color.Lerp(needleColor, _smHue, 0.5f);
         needleCol.a *= Mathf.Clamp01(_smBrightness);
         _needle.color = needleCol;
 
-        // keep gauge elements bright/dim with signal
         UpdateTickLabels();
     }
 
     // ===== helpers =====
-    static string MidiToNameOctave(int midi)
+    static string MidiToName(int midi)
     {
         int note = ((midi % 12) + 12) % 12;
-        int octave = (midi / 12) - 1;
-        return NOTE[note];// + octave.ToString();
+        return NOTE[note]; // no octave appended
     }
+
+    static int MidiToOctave(int midi) => (midi / 12) - 1;
 
     static Image CreateLine(RectTransform parent, float thickness, Color color, bool vertical)
     {
@@ -573,19 +536,70 @@ for (int i = 0; i < total; i++)
         return img;
     }
 
-    static void SetLabelText(Graphic g, string s)
+    static string Hex2(float a01)
+    {
+        int a = Mathf.RoundToInt(Mathf.Clamp01(a01) * 255f);
+        return a.ToString("X2");
+    }
+
+    void SetLabelText(Graphic g, string noteWithAcc, int octave)
     {
         if (!g) return;
-#if TMP_PRESENT || true
+
+        // Split base + accidental (supports '#' → ♯ and 'b' → ♭)
+        string baseNote = noteWithAcc;
+        string accidental = "";
+        if (noteWithAcc.Length >= 2)
+        {
+            char acc = noteWithAcc[1];
+            if (acc == '#' || acc == 'b' || acc == '♯' || acc == '♭')
+            {
+                baseNote = noteWithAcc.Substring(0, 1);
+                accidental = (acc == '#' ? "♯" : (acc == 'b' ? "♭" : acc.ToString()));
+            }
+        }
+
+#if TMP_PRESENT || TEXTMESHPRO
         var tmp = g.GetComponent<TMP_Text>() ?? g.GetComponentInChildren<TMP_Text>(true);
-        if (tmp) { tmp.text = s; return; }
+        if (tmp)
+        {
+            // Compose one TMP string with rich tags (no extra objects)
+            string text = baseNote;
+
+            if (showAccidentalSmall && !string.IsNullOrEmpty(accidental))
+            {
+                text += $"<size={accidentalSizePercent}%><voffset={accidentalVOffsetEm}em>{accidental}</voffset></size>";
+            }
+
+            if (showOctaveSmall)
+            {
+
+                float xSp;
+                if (!string.IsNullOrEmpty(accidental))
+                {
+                    xSp = -0.42f;
+                }
+
+                else
+                {
+                    xSp = octaveHSpaceEm;
+                }
+                
+                text += $"<size={octaveSizePercent}%><voffset={octaveVOffsetEm}em><space={xSp}em>{octave}</voffset></size>";
+            }
+
+            tmp.text = text;
+            return;
+        }
 #endif
+        // Legacy Text fallback (no rich tags)
         var t = g.GetComponent<Text>() ?? g.GetComponentInChildren<Text>(true);
-        if (t) t.text = s;
+        if (t) t.text = showOctaveSmall ? $"{baseNote}{accidental}{octave}" : $"{baseNote}{accidental}";
     }
+
     static Color GetLabelColor(Graphic g)
     {
-#if TMP_PRESENT || true
+#if TMP_PRESENT || TEXTMESHPRO
         var tmp = g.GetComponent<TMP_Text>() ?? g.GetComponentInChildren<TMP_Text>(true);
         if (tmp) return tmp.color;
 #endif
@@ -593,10 +607,11 @@ for (int i = 0; i < total; i++)
         if (t) return t.color;
         return g ? g.color : Color.white;
     }
+
     static void SetLabelColor(Graphic g, Color c)
     {
         if (!g) return;
-#if TMP_PRESENT || true
+#if TMP_PRESENT || TEXTMESHPRO
         var tmp = g.GetComponent<TMP_Text>() ?? g.GetComponentInChildren<TMP_Text>(true);
         if (tmp) { tmp.color = c; return; }
 #endif
@@ -604,7 +619,7 @@ for (int i = 0; i < total; i++)
         if (t) { t.color = c; return; }
         g.color = c;
     }
-    
+
     // Destroy safely in edit vs play mode
     static void DestroySafe(UnityEngine.Object o)
     {
@@ -613,12 +628,11 @@ for (int i = 0; i < total; i++)
         else DestroyImmediate(o);
     }
 
-// Find or create the single __CentsGauge child; purge duplicates.
+    // Find or create the single __CentsGauge child; purge duplicates.
     RectTransform FindOrCreateGaugeRoot()
     {
         if (!viewport) return null;
 
-        // Collect any existing children with the gauge name
         var found = new List<RectTransform>();
         for (int i = 0; i < viewport.childCount; i++)
         {
@@ -629,14 +643,11 @@ for (int i = 0; i < total; i++)
 
         if (found.Count > 0)
         {
-            // Keep the first, remove the rest
             for (int i = 1; i < found.Count; i++)
                 DestroySafe(found[i].gameObject);
-
             return found[0];
         }
 
-        // None found — create exactly one
         var go = new GameObject("__CentsGauge", typeof(RectTransform));
         go.transform.SetParent(viewport, false);
         var gauge = go.GetComponent<RectTransform>();
@@ -645,5 +656,4 @@ for (int i = 0; i < total; i++)
         gauge.sizeDelta = Vector2.zero;
         return gauge;
     }
-
 }
